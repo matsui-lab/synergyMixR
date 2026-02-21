@@ -1,0 +1,640 @@
+---
+title: "Unified r-Selection Framework for Mixture Models"
+author: "Yusuke Matsui"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Unified r-Selection Framework for Mixture Models}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  eval = FALSE  # Set to TRUE when package is fully built
+)
+```
+
+## Introduction
+
+Selecting the optimal number of factors (r) is a critical step in mixture-based muscle synergy analysis. The `synergyMixR` package provides a unified framework for r-selection that integrates three complementary approaches:
+
+1. **Global-first**: Estimate r from pooled data before considering cluster structure
+2. **Clusterwise**: Evaluate r separately for each cluster, then aggregate
+3. **Hybrid**: Combine global and clusterwise approaches for robust selection
+
+This vignette demonstrates how to use the unified `select_r_mixture()` function and interpret the results using the built-in visualization methods.
+
+## Load the Package
+
+```{r load-package}
+library(synergyMixR)
+```
+
+## Generate Example Data
+
+We'll use synthetic data to demonstrate the r-selection framework. This allows us to know the true r value and evaluate how well each method recovers it.
+
+```{r simulate-data}
+# Generate synthetic data with known structure
+# N = 50 subjects, K = 3 clusters, r = 4 true synergies, M = 8 muscles
+sim_data <- generate_synergy_data(
+  N = 50,
+  K = 3,
+  r = 4,  # True number of synergies
+  M = 8,
+  T_each = 100,
+  cluster_sep_spatial = 1.0,
+  seed = 123
+)
+
+list_of_data <- sim_data$list_of_data
+z_true <- sim_data$true_cluster
+
+cat("Generated data with", length(list_of_data), "subjects\n")
+cat("True cluster sizes:", table(z_true), "\n")
+cat("True r = 4\n")
+```
+
+## Mode 1: Global-First Selection
+
+The global-first mode estimates r by pooling all data together, ignoring cluster structure. This provides a fast, cluster-independent baseline estimate.
+
+### When to Use Global-First Mode
+
+- When you want a quick, stable estimate
+- As a starting point before more detailed analysis
+- When cluster structure is weak or uncertain
+- For computational efficiency with large datasets
+
+### Usage Example
+
+```{r global-first}
+# Estimate r using global-first mode
+result_global <- select_r_mixture(
+  list_of_data = list_of_data,
+  K = 3,
+  rvec = 2:6,  # Candidate r values to evaluate
+  mode = "global-first",
+  model_type = "MFA",
+  global_model = "PPCA",  # Use PPCA for global estimation
+  global_criterion = "CV",  # Cross-validation
+  global_folds = 5,
+  verbose = TRUE
+)
+
+# View results
+print(result_global)
+summary(result_global)
+```
+
+### Visualize Results
+
+```{r plot-global, fig.width=7, fig.height=5}
+# Plot CV curve
+plot(result_global, type = "global_cv")
+
+# Or use overview (same for global-first mode)
+plot(result_global)
+```
+
+The CV curve shows how cross-validation error varies with r. The selected r_global minimizes this error.
+
+## Mode 2: Clusterwise Selection
+
+The clusterwise mode evaluates r separately for each cluster, then aggregates the results. This allows different clusters to have different optimal r values.
+
+### When to Use Clusterwise Mode
+
+- When you suspect different clusters may require different numbers of synergies
+- When cluster structure is well-defined
+- When you want cluster-specific insights
+- For detailed analysis of heterogeneous populations
+
+### Usage Example
+
+```{r clusterwise}
+# Estimate r using clusterwise mode
+result_cluster <- select_r_mixture(
+  list_of_data = list_of_data,
+  K = 3,
+  rvec = 2:6,
+  mode = "clusterwise",
+  model_type = "MFA",
+  criteria = c("VAF", "VSS", "smoothness"),  # Multiple criteria
+  agg_method = "max",  # Take maximum r across clusters
+  weights = c(VAF = 0.4, VSS = 0.4, smoothness = 0.2),
+  verbose = TRUE
+)
+
+# View results
+print(result_cluster)
+summary(result_cluster)
+
+# Check cluster-specific r values
+cat("Cluster-specific r values:\n")
+print(result_cluster$r_cluster)
+cat("Aggregated r_final:", result_cluster$r_final, "\n")
+```
+
+### Aggregation Methods
+
+The `agg_method` parameter controls how cluster-specific r values are combined:
+
+- **"max"** (default): Conservative approach, takes the maximum r across clusters
+- **"mean"**: Average r across clusters (rounded to nearest integer)
+- **"min"**: Minimum r across clusters (most parsimonious)
+- **"majority"**: Most frequently selected r value
+
+```{r agg-methods}
+# Compare different aggregation methods
+methods <- c("max", "mean", "min", "majority")
+results <- lapply(methods, function(method) {
+  res <- select_r_mixture(
+    list_of_data = list_of_data,
+    K = 3,
+    rvec = 2:6,
+    mode = "clusterwise",
+    model_type = "MFA",
+    agg_method = method,
+    verbose = FALSE
+  )
+  c(method = method, r_final = res$r_final)
+})
+
+cat("Comparison of aggregation methods:\n")
+do.call(rbind, results)
+```
+
+### Visualize Clusterwise Results
+
+```{r plot-clusterwise, fig.width=10, fig.height=8}
+# Overview: shows cluster metrics heatmap and cluster scores
+plot(result_cluster)
+
+# Individual plot types
+plot(result_cluster, type = "cluster_metrics")  # Heatmap
+plot(result_cluster, type = "cluster_scores")   # Line plots
+```
+
+The heatmap shows how each cluster's composite score varies with r. Blue squares mark the selected r for each cluster.
+
+## Mode 3: Hybrid Selection (Recommended)
+
+The hybrid mode combines the best of both approaches: it uses global estimation to get a stable initialization, then refines with cluster-specific evaluation.
+
+### When to Use Hybrid Mode
+
+- **Recommended as default** for most applications
+- Combines stability of global estimation with flexibility of clusterwise evaluation
+- Uses r_global as initialization for clusterwise fitting (Phase 3 feature)
+- Provides comprehensive diagnostic information
+
+### Usage Example
+
+```{r hybrid}
+# Estimate r using hybrid mode
+result_hybrid <- select_r_mixture(
+  list_of_data = list_of_data,
+  K = 3,
+  rvec = 2:6,
+  mode = "hybrid",
+  model_type = "MFA",
+  global_model = "PPCA",
+  global_criterion = "CV",
+  criteria = c("VAF", "VSS", "smoothness"),
+  agg_method = "max",  # Can also use "global" to skip clusterwise
+  verbose = TRUE
+)
+
+# View results
+print(result_hybrid)
+summary(result_hybrid)
+
+# Compare global vs cluster-specific estimates
+cat("\nComparison:\n")
+cat("Global r:", result_hybrid$r_global, "\n")
+cat("Cluster-specific r:", result_hybrid$r_cluster, "\n")
+cat("Final r:", result_hybrid$r_final, "\n")
+```
+
+### Special Aggregation: "global"
+
+In hybrid mode, you can use `agg_method = "global"` to directly use r_global without clusterwise refinement:
+
+```{r hybrid-global}
+result_hybrid_simple <- select_r_mixture(
+  list_of_data = list_of_data,
+  K = 3,
+  rvec = 2:6,
+  mode = "hybrid",
+  model_type = "MFA",
+  agg_method = "global",  # Use r_global directly
+  verbose = TRUE
+)
+
+cat("Using r_global directly:", result_hybrid_simple$r_final, "\n")
+```
+
+### Visualize Hybrid Results
+
+```{r plot-hybrid, fig.width=10, fig.height=8}
+# Overview: shows all available plots
+plot(result_hybrid)
+
+# Individual plot types
+plot(result_hybrid, type = "global_cv")        # CV curve
+plot(result_hybrid, type = "r_comparison")     # Bar plot comparing r values
+plot(result_hybrid, type = "cluster_metrics")  # Heatmap
+plot(result_hybrid, type = "cluster_scores")   # Line plots
+```
+
+The r_comparison plot is particularly useful in hybrid mode, showing how r_global compares to cluster-specific estimates and the final r_final.
+
+## Comparison: MFA vs MPCA
+
+The framework supports both Mixture Factor Analysis (MFA) and Mixture PCA (MPCA). Here's how to use MPCA:
+
+```{r mpca}
+# Use MPCA instead of MFA
+result_mpca <- select_r_mixture(
+  list_of_data = list_of_data,
+  K = 3,
+  rvec = 2:6,
+  mode = "hybrid",
+  model_type = "MPCA",  # Change to MPCA
+  global_model = "PPCA",  # PPCA for global estimation
+  verbose = TRUE
+)
+
+print(result_mpca)
+plot(result_mpca)
+```
+
+**When to use MFA vs MPCA:**
+
+- **MFA**: More flexible, allows for correlated noise (Psi diagonal)
+- **MPCA**: Simpler, assumes isotropic noise (single sigma^2)
+- **Recommendation**: Start with MFA for muscle synergy analysis
+
+## Advanced: Direct Use of Clusterwise Functions
+
+For more control, you can directly use the underlying clusterwise functions:
+
+```{r direct-clusterwise}
+# Direct call to clusterwise function
+result_direct <- select_r_clusterwise_mfa(
+  list_of_data = list_of_data,
+  K = 3,
+  rvec = 2:6,
+  mode = "clusterwise",
+  criteria = c("VAF", "VSS"),
+  agg_method = "max",
+  r_init = 4,  # Specify initial r for clustering (Phase 3 feature)
+  verbose = TRUE
+)
+
+cat("Selected r:", result_direct$agg_r, "\n")
+```
+
+The `r_init` parameter (added in Phase 3) allows you to specify the initial r value used for the first-stage clustering. This is automatically set to r_global in hybrid mode.
+
+## Best Practices and Recommendations
+
+### 1. Start with Hybrid Mode
+
+```{r best-practice-1}
+# Recommended default workflow
+result <- select_r_mixture(
+  list_of_data = list_of_data,
+  K = 3,
+  rvec = 2:6,
+  mode = "hybrid",
+  model_type = "MFA",
+  verbose = TRUE
+)
+```
+
+### 2. Use Appropriate rvec Range
+
+- Start with a reasonable range (e.g., 2:6 for muscle synergies)
+- Ensure the range includes the expected true r
+- Avoid very large ranges to reduce computation time
+
+### 3. Interpret Multiple Criteria
+
+```{r best-practice-3}
+# Check cluster-specific metrics
+if (!is.null(result$diagnostics$cluster_metrics)) {
+  for (k in 1:3) {
+    cat("\nCluster", k, "metrics:\n")
+    print(result$diagnostics$cluster_metrics[[k]])
+  }
+}
+```
+
+### 4. Validate with Visualization
+
+Always visualize the results to ensure the selection makes sense:
+
+```{r best-practice-4}
+plot(result)  # Overview
+plot(result, type = "r_comparison")  # Compare estimates
+```
+
+### 5. Consider Computational Cost
+
+- **Global-first**: Fastest, O(N)
+- **Clusterwise**: Moderate, O(K × |rvec|)
+- **Hybrid**: Slowest, O(N + K × |rvec|), but most comprehensive
+
+For large datasets, consider:
+- Using `mc_cores > 1` for parallelization
+- Reducing `n_init` (number of random initializations)
+- Starting with global-first for quick exploration
+
+## Troubleshooting
+
+### Issue: Different modes give very different r values
+
+**Solution**: This suggests cluster structure is important. Use hybrid mode and examine cluster-specific estimates:
+
+```{r troubleshoot-1}
+# Check if clusters have different optimal r
+cat("Cluster-specific r values:", result_hybrid$r_cluster, "\n")
+cat("Global r:", result_hybrid$r_global, "\n")
+
+# Visualize the differences
+plot(result_hybrid, type = "r_comparison")
+```
+
+### Issue: Selected r is at the boundary of rvec
+
+**Solution**: Expand your rvec range:
+
+```{r troubleshoot-2}
+# If r_final = max(rvec), try larger range
+if (result$r_final == max(rvec)) {
+  result_expanded <- select_r_mixture(
+    list_of_data = list_of_data,
+    K = 3,
+    rvec = 2:8,  # Expanded range
+    mode = "hybrid",
+    verbose = TRUE
+  )
+}
+```
+
+### Issue: Clusterwise mode gives NA or warnings
+
+**Solution**: Check for degenerate clusters (too few subjects or low VAF):
+
+```{r troubleshoot-3}
+# Run with verbose=TRUE to see warnings
+result_verbose <- select_r_mixture(
+  list_of_data = list_of_data,
+  K = 3,
+  rvec = 2:6,
+  mode = "clusterwise",
+  verbose = TRUE  # Shows degeneracy warnings
+)
+
+# Check cluster sizes
+if (!is.null(result_verbose$initial_fit)) {
+  cat("Cluster sizes:", table(result_verbose$initial_fit$z), "\n")
+}
+```
+
+## Multi-Criteria Selection
+
+When you want to combine multiple metrics with custom weights, use `select_r_multicriteria_mfa()`:
+
+```{r multicriteria}
+# Multi-criteria selection with custom weights
+result_multi <- select_r_multicriteria_mfa(
+  list_of_data = list_of_data,
+  K = 3,
+  rvec = 2:6,
+  vaf_threshold = 0.85,  # Minimum VAF required
+  weights = c(BIC = 1, VAF = 1, smoothness = 1, VSS = 1)
+)
+
+# View detailed summary
+print(result_multi$summary)
+cat("Selected r:", result_multi$best_r, "\n")
+```
+
+### Understanding the Composite Score
+
+The multi-criteria approach combines four metrics:
+
+1. **BIC** (lower is better): Penalizes model complexity
+2. **VAF** (higher is better): Measures reconstruction accuracy
+3. **Smoothness** (lower is better): Penalizes high-frequency noise in factor scores
+4. **VSS** (higher is better): Rewards interpretable simple structure
+
+Each metric is normalized to [0, 1], then combined:
+
+```
+score = w_BIC × BIC_norm + w_VAF × (1 - VAF_norm)
+      + w_smooth × smooth_norm + w_VSS × (1 - VSS_norm)
+```
+
+The r with the minimum score (among those satisfying VAF threshold) is selected.
+
+### Weight Configuration Guidelines
+
+| Scenario | Recommended Weights | Rationale |
+|----------|---------------------|-----------|
+| Interpretation focus | `VSS = 2, others = 1` | Prioritize simple, interpretable loadings |
+| Generalization focus | `BIC = 2, others = 1` | Avoid overfitting |
+| EMG time-series | `smoothness = 2, others = 1` | Leverage temporal structure |
+| Balanced (default) | All = 1 | Equal consideration |
+
+```{r weight-examples}
+# Example: Emphasize interpretability
+result_interpret <- select_r_multicriteria_mfa(
+  list_of_data, K = 3, rvec = 2:6,
+  weights = c(BIC = 1, VAF = 1, smoothness = 1, VSS = 2)
+)
+
+# Example: Emphasize generalization
+result_general <- select_r_multicriteria_mfa(
+  list_of_data, K = 3, rvec = 2:6,
+  weights = c(BIC = 2, VAF = 1, smoothness = 1, VSS = 1)
+)
+
+cat("Interpretation-focused r:", result_interpret$best_r, "\n")
+cat("Generalization-focused r:", result_general$best_r, "\n")
+```
+
+## Understanding the Metrics
+
+This section provides detailed explanations of each metric used in r-selection.
+
+### Cross-Validation (CV)
+
+**Purpose**: Estimate generalization performance by testing on held-out subjects.
+
+**Method**: Leave-one-subject-out cross-validation
+
+- For each subject i, fit model on remaining N-1 subjects
+- Evaluate negative log-likelihood or Frobenius norm on held-out subject
+- Average across all subjects
+
+**When to use**: Primary criterion for global r estimation
+
+**Interpretation**:
+- Lower CV error = better generalization
+- Look for "elbow" in the CV curve
+- Selected r minimizes CV error
+
+```{r cv-example}
+# Direct CV-based selection
+result_cv <- select_r_global_mfa(
+  list_of_data,
+  rvec = 2:6,
+  criterion = "CV",
+  cv_folds = 5,
+  cv_metric = "NegLogLik"
+)
+
+cat("CV-selected r:", result_cv$r_global, "\n")
+```
+
+### Variance Accounted For (VAF)
+
+**Purpose**: Measure how much variance the model explains.
+$$
+\text{VAF} = 1 - \frac{\sum_i \|X_i - \hat{X}_i\|^2}{\sum_i \|X_i - \bar{X}\|^2}
+$$
+
+**Interpretation**:
+- VAF = 0.90 means 90% of variance explained
+- Increases monotonically with r (more factors = more variance explained)
+- Cannot detect overfitting alone
+
+**Typical thresholds** (muscle synergy literature):
+- Minimum acceptable: 0.80
+- Good: 0.85-0.90
+- Excellent: > 0.95
+
+**Caution**: Use with other metrics; VAF alone favors larger r.
+
+### Smoothness Penalty
+
+**Purpose**: Detect overfitting by measuring temporal smoothness of factor scores.
+
+**Method**: Sum of squared second-order differences
+$$
+\text{Smoothness} = \sum_{i,j,t} (z_{i,j,t} - 2z_{i,j,t-1} + z_{i,j,t-2})^2
+$$
+
+**Interpretation**:
+- Low smoothness = smooth, physiologically plausible activations
+- High smoothness = "wiggly" factors fitting high-frequency noise
+- EMG-specific: leverages expected temporal structure
+
+**When to use**: Particularly useful for EMG/muscle synergy analysis where factor scores should vary smoothly over time.
+
+### Very Simple Structure (VSS)
+
+**Purpose**: Evaluate interpretability of factor loadings.
+
+**Concept**: Each muscle should load strongly on few (ideally one) synergy.
+
+**Two methods**:
+
+1. **Threshold method**: Proportion of muscles with exactly one loading > threshold
+2. **Ratio method**: Average of max(λ²)/sum(λ²) per muscle
+
+**Interpretation**:
+- High VSS = each muscle clearly associated with one synergy
+- Low VSS = complex, hard-to-interpret loadings
+
+**Note**: Apply after varimax rotation for meaningful results:
+
+```{r vss-example}
+# Compute VSS with rotation
+vss_rotated <- compute_vss_criterion(
+  mfa_fit$Lambda,
+  threshold = 0.5,
+  method = "ratio",
+  rotate = "varimax"
+)
+```
+
+### Parallel Analysis (PA)
+
+**Purpose**: Determine r by comparing eigenvalues to random data.
+
+**Method**:
+1. Compute eigenvalues of pooled covariance matrix
+2. Generate random permutations of data
+3. Compute 95th percentile of random eigenvalues
+4. Select r = number of observed eigenvalues exceeding random threshold
+
+**Interpretation**:
+- Conservative estimate (often underestimates r)
+- Good for exploratory analysis
+- Less suitable when cluster structure is strong
+
+```{r pa-example}
+# Global MFA-based r estimation (replaces parallel analysis)
+result_pa <- select_r_global_mfa(
+  list_of_data,
+  rvec = 1:8
+)
+
+cat("Selected r:", result_pa$r_global, "\n")
+```
+
+### Bayesian Information Criterion (BIC)
+
+**Purpose**: Balance model fit and complexity.
+$$
+\text{BIC} = -2 \log L + p \log(n)
+$$
+
+where p = number of parameters, n = sample size.
+
+**Interpretation**:
+- Lower BIC = better model
+- Automatically penalizes complexity
+- Used in K,r grid search for joint selection
+
+## Summary
+
+The unified r-selection framework provides three complementary approaches:
+
+| Mode | Speed | Stability | Flexibility | Recommended Use |
+|------|-------|-----------|-------------|-----------------|
+| **Global-first** | Fast | High | Low | Quick baseline, large datasets |
+| **Clusterwise** | Moderate | Moderate | High | Heterogeneous populations |
+| **Hybrid** | Slow | High | High | **Default recommendation** |
+
+**Key takeaways:**
+
+1. Use `select_r_mixture()` as the unified entry point
+2. Start with `mode = "hybrid"` for most applications
+3. Always visualize results with `plot(result)`
+4. Consider cluster-specific estimates when interpreting results
+5. Use `verbose = TRUE` to understand the selection process
+
+## References
+
+For more information on the underlying methods:
+
+- **Global estimation**: See `?select_r_global_mfa` for CV and Parallel Analysis
+- **Clusterwise evaluation**: See `?select_r_clusterwise_mfa` for metrics and aggregation
+- **Mixture models**: See the main tutorial vignette for MFA/MPCA details
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

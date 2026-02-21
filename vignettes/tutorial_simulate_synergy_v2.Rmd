@@ -1,0 +1,437 @@
+---
+title: "Tutorial: Simulating Dynamic Synergy Data with Three Control Axes"
+author: "synergyMixR Package"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Tutorial: Simulating Dynamic Synergy Data with Three Control Axes}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 10,
+  fig.height = 8,
+  warning = FALSE,
+  message = FALSE
+)
+# Check if viridis is available (required for visualization functions)
+has_viridis <- requireNamespace("viridis", quietly = TRUE)
+```
+
+## Overview
+
+The `simulate_dynamic_synergy_data()` function provides a powerful framework for generating synthetic muscle synergy data with controlled characteristics. Unlike traditional simulation approaches that generate data from a single global model, this function enables researchers to systematically explore how different motor control strategies affect muscle synergy structures through three orthogonal control axes.
+
+### Three Orthogonal Control Axes
+
+The simulation framework is built around three complementary dimensions of motor control diversity:
+
+**1. Spatial Structure (`cluster_sep_spatial`)**: Controls how muscle groups contribute to synergy components. This axis defines the spatial organization of muscle activation patterns, such as proximal-dominant (hip and thigh emphasis), distal-dominant (calf and shin emphasis), or balanced patterns. In rehabilitation contexts, this might represent different movement strategies adopted by patients with varying levels of motor impairment.
+
+**2. Temporal Coordination (`cluster_sep_temporal`)**: Governs the timing and rhythmic properties of synergy activations. This includes onset timing, phase relationships, and frequency characteristics. Three representative coordination modes are implemented:
+- **Rigid/Co-contraction**: All synergies activate in-phase with strong temporal overlap
+- **Alternating/Efficient**: Phases evenly distributed with minimal overlap
+- **Adaptive/Reactive**: Random phases with heterogeneous frequencies
+
+**3. Stability-Adaptability (`cluster_sep_stability`)**: Introduces physiological and measurement variability to simulate differences in motor control precision. This axis represents the trade-off between stable, precise control (characteristic of elite athletes or late-stage rehabilitation) and adaptive, exploratory control (characteristic of early rehabilitation or fatigue states).
+
+Each axis can be independently controlled with separation parameters ranging from 0 (no differentiation between clusters) to 2 (strongly distinct patterns), enabling factorial experimental designs.
+
+## Simulation Setup
+
+Let's begin by loading the required packages and generating a basic dataset:
+
+```{r load_packages}
+library(synergyMixR)
+library(ggplot2)
+library(patchwork)
+if (requireNamespace("viridis", quietly = TRUE)) {
+  library(viridis)  # Required for plot_synergy_bases color scales
+}
+```
+
+```{r basic_simulation}
+set.seed(650)
+sim <- simulate_dynamic_synergy_data(
+  N = 30,           # 30 subjects
+  K = 3,            # 3 clusters (subgroups)
+  r = 3,            # 3 synergies per cluster
+  M = 8,            # 8 muscles
+  T_each = 200,     # 200 time points per subject
+  cluster_sep_spatial = 1.0,
+  cluster_sep_temporal = 1.0,
+  cluster_sep_stability = 1.0
+)
+```
+
+Let's examine the structure of the returned object:
+
+```{r examine_structure}
+str(sim, max.level = 2)
+```
+
+The simulation returns a list containing:
+
+- `X_list`: EMG signals for each subject (T × M matrices)
+- `C_list`: Synergy activation signals for each subject (T × r matrices)
+- `Lambda_list`: Cluster-specific synergy loading matrices (M × r matrices)
+- `z_true`: True cluster assignments for each subject
+- `spatial_params`: Spatial structure parameters for each cluster
+- `temporal_params`: Temporal coordination parameters for each cluster
+- `stability_params`: Stability-adaptability parameters for each cluster
+
+```{r cluster_distribution}
+cat("Cluster distribution:\n")
+table(sim$z_true)
+```
+
+## Visualization
+
+The package provides six visualization functions to explore different aspects of the simulated data.
+
+### Synergy Bases (Spatial Structure)
+
+The `plot_synergy_bases()` function visualizes the synergy loading matrices (Lambda_k) for each cluster as heatmaps. Each heatmap shows how strongly each muscle contributes to each synergy component.
+
+```{r plot_synergy_bases, fig.width=10, fig.height=4, eval=has_viridis}
+plot_synergy_bases(sim)
+```
+
+**Interpretation**: The heatmaps reveal the spatial organization of muscle synergies. Cluster 1 shows proximal-dominant patterns (stronger weights in the first few muscles), Cluster 2 shows distal-dominant patterns (stronger weights in the last few muscles), and Cluster 3 shows a more balanced or mixed pattern. These differences reflect distinct motor control strategies that might be observed in different patient populations or skill levels.
+
+### Temporal Activation Patterns
+
+The `plot_activation_patterns()` function shows how synergies are activated over time for representative subjects from each cluster.
+
+```{r plot_activation_patterns, fig.width=10, fig.height=4, eval=has_viridis}
+plot_activation_patterns(sim)
+```
+
+**Interpretation**: The temporal patterns reveal coordination differences between clusters. Notice how the timing, phase relationships, and rhythmic properties differ across clusters. Cluster 1 may show more synchronized activation (co-contraction), Cluster 2 may show alternating patterns (efficient coordination), and Cluster 3 may show more variable timing (adaptive control).
+
+### Reconstructed EMG Signals
+
+The `plot_reconstructed_emg()` function displays the full EMG time-series for all subjects and muscles. Individual subject traces appear as thin semi-transparent lines, while the cluster-mean waveform is shown as a bold black line.
+
+```{r plot_reconstructed_emg, fig.width=10, fig.height=8, eval=has_viridis}
+plot_reconstructed_emg(sim)
+```
+
+**Interpretation**: This visualization reveals both the underlying synergy structure (reflected in the mean waveforms) and the inter-subject variability within each cluster. The spread of individual traces around the mean indicates the degree of motor variability, which may reflect differences in motor learning stage, fatigue, or control strategy.
+
+### Noise Profiles (Stability-Adaptability)
+
+The `plot_noise_profiles()` function shows the distribution of noise parameters across clusters, revealing differences in control precision and adaptability.
+
+```{r plot_noise_profiles, fig.width=10, fig.height=4, eval=has_viridis}
+plot_noise_profiles(sim)
+```
+
+**Interpretation**: The noise profiles quantify the stability-adaptability trade-off. Cluster 1 (stable control) shows low noise levels, indicating precise, consistent motor control. Cluster 3 (adaptive control) shows higher noise levels, indicating more variable, exploratory control. These differences might correspond to different stages of motor learning or rehabilitation.
+
+### Cluster Embedding (Separability)
+
+The `plot_cluster_embedding()` function creates a low-dimensional visualization of cluster separability using UMAP or PCA. Each point represents a subject, colored by true cluster assignment.
+
+```{r plot_cluster_embedding_umap, fig.width=8, fig.height=6, eval=has_viridis}
+# UMAP embedding (if umap package is available)
+if (requireNamespace("umap", quietly = TRUE)) {
+  plot_cluster_embedding(sim, method = "umap")
+}
+```
+
+```{r plot_cluster_embedding_pca, fig.width=8, fig.height=6, eval=has_viridis}
+# PCA embedding (always available)
+plot_cluster_embedding(sim, method = "pca")
+```
+
+**Interpretation**: The embedding reveals how well-separated the clusters are in feature space. Well-separated clusters indicate that the three control axes have created distinct motor control profiles. This visualization is useful for assessing whether the simulated data will be challenging or easy for clustering algorithms to recover.
+
+### Comprehensive Summary
+
+The `plot_synergy_summary()` function combines multiple visualization panels into a single comprehensive overview using the patchwork package.
+
+```{r plot_synergy_summary, fig.width=14, fig.height=10, eval=has_viridis}
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  plot_synergy_summary(sim)
+}
+```
+
+**Interpretation**: This summary provides a holistic view of the simulated data, showing spatial synergy structures (top left), temporal activation dynamics (top right), noise profiles (bottom left), and cluster separability (bottom right). This is particularly useful for quickly assessing the overall characteristics of a simulation.
+
+### Neural Command Visualization
+
+The `plot_neural_command()` function visualizes the temporal evolution of neural control signals by creating a low-dimensional representation of synergy activation trajectories. This reveals how motor commands change over time within and across clusters.
+
+```{r plot_neural_command_cluster, fig.width=10, fig.height=6, eval=has_viridis}
+plot_neural_command(sim, method = "pca", color_by = "cluster", smooth = TRUE)
+```
+
+**Interpretation**: The neural command embedding reveals temporal evolution of control signals across clusters, showing coherent trajectories for shared synergy activation patterns. Each trajectory represents how a subject's neural commands evolve through time, with smooth paths connecting consecutive time points. Clusters with distinct temporal coordination strategies (co-contraction vs. alternating vs. adaptive) form separate regions in this low-dimensional space.
+
+We can also visualize the temporal progression by coloring points by time rather than cluster:
+
+```{r plot_neural_command_time, fig.width=12, fig.height=4, eval=has_viridis}
+plot_neural_command(sim, method = "pca", color_by = "time", smooth = TRUE)
+```
+
+**Interpretation**: When colored by time, the trajectories reveal how neural commands evolve from the beginning (dark purple) to the end (bright yellow) of each movement cycle. This visualization is particularly useful for identifying periodic patterns, transient dynamics, or drift in motor control strategies over time. The faceting by cluster allows direct comparison of temporal evolution patterns across different motor control strategies.
+
+If the `uwot` package is available, we can also use UMAP for a potentially more informative embedding:
+
+```{r plot_neural_command_umap, fig.width=10, fig.height=6, eval=has_viridis}
+if (requireNamespace("uwot", quietly = TRUE)) {
+  plot_neural_command(sim, method = "umap", color_by = "cluster", smooth = TRUE)
+}
+```
+
+**Interpretation**: UMAP often provides better separation of clusters and can reveal nonlinear structure in the neural command space that PCA might miss. The smooth trajectories show how individual subjects navigate through the neural command space over time, with cluster-specific patterns emerging as distinct regions or pathways.
+
+## Cluster-Wise Subject Distribution
+
+To examine the distribution of subjects within a specific cluster, we can use the `cluster_id` parameter:
+
+```{r plot_cluster_1, fig.width=10, fig.height=8, eval=has_viridis}
+plot_reconstructed_emg(sim, cluster_id = 1)
+```
+
+**Interpretation**: This view shows all subjects from Cluster 1 (faint gray lines) overlaid with the cluster mean (bold black line). The variability around the mean reflects individual differences in motor execution while maintaining the same underlying synergy structure. This type of visualization is valuable for understanding how much within-cluster variability exists and whether the cluster represents a coherent motor strategy.
+
+Let's examine another cluster:
+
+```{r plot_cluster_2, fig.width=10, fig.height=8, eval=has_viridis}
+plot_reconstructed_emg(sim, cluster_id = 2)
+```
+
+We can also focus on specific muscles:
+
+```{r plot_cluster_muscles, fig.width=10, fig.height=6, eval=has_viridis}
+plot_reconstructed_emg(sim, cluster_id = 1, muscles = c(1, 2, 3, 4))
+```
+
+**Interpretation**: By focusing on a subset of muscles, we can more clearly see the temporal patterns and inter-subject variability in specific muscle groups. This is useful when investigating hypotheses about specific muscle coordination patterns.
+
+## Exploring Control-Axis Effects
+
+One of the key advantages of `simulate_dynamic_synergy_data()` is the ability to systematically explore how each control axis affects the data characteristics. Let's sweep one axis at a time while holding the others constant.
+
+### Effect of Spatial Separation
+
+```{r spatial_sweep, fig.width=12, fig.height=4, eval=has_viridis}
+spatial_levels <- c(0, 0.5, 1.0, 2.0)
+sims_spatial <- lapply(spatial_levels, function(sep) {
+  simulate_dynamic_synergy_data(
+    N = 20, K = 3, r = 3, M = 8, T_each = 100,
+    cluster_sep_spatial = sep,
+    cluster_sep_temporal = 1.0,
+    cluster_sep_stability = 1.0,
+    seed = 700
+  )
+})
+
+# Visualize synergy bases across spatial separation levels
+plots_spatial <- lapply(seq_along(spatial_levels), function(i) {
+  plot_synergy_bases(sims_spatial[[i]], theme_base_size = 10) +
+    ggtitle(paste0("Spatial Sep = ", spatial_levels[i]))
+})
+
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  patchwork::wrap_plots(plots_spatial, nrow = 1)
+}
+```
+
+**Interpretation**: As spatial separation increases from 0 to 2, the synergy loading matrices become increasingly distinct across clusters. At separation = 0, all clusters have nearly identical spatial patterns. At separation = 2, the clusters show strongly differentiated muscle activation profiles.
+
+### Effect of Temporal Separation
+
+```{r temporal_sweep, fig.width=12, fig.height=4, eval=has_viridis}
+temporal_levels <- c(0, 0.5, 1.0, 2.0)
+sims_temporal <- lapply(temporal_levels, function(sep) {
+  simulate_dynamic_synergy_data(
+    N = 20, K = 3, r = 3, M = 8, T_each = 100,
+    cluster_sep_spatial = 1.0,
+    cluster_sep_temporal = sep,
+    cluster_sep_stability = 1.0,
+    seed = 800
+  )
+})
+
+# Visualize activation patterns across temporal separation levels
+plots_temporal <- lapply(seq_along(temporal_levels), function(i) {
+  plot_activation_patterns(sims_temporal[[i]], theme_base_size = 10) +
+    ggtitle(paste0("Temporal Sep = ", temporal_levels[i]))
+})
+
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  patchwork::wrap_plots(plots_temporal, nrow = 1)
+}
+```
+
+**Interpretation**: As temporal separation increases, the phase relationships and frequency characteristics become more distinct across clusters. At low separation, all clusters show similar temporal coordination. At high separation, the clusters exhibit clearly different timing patterns (co-contraction vs. alternating vs. adaptive).
+
+### Effect of Stability Separation
+
+```{r stability_sweep, fig.width=12, fig.height=4, eval=has_viridis}
+stability_levels <- c(0, 0.5, 1.0, 2.0)
+sims_stability <- lapply(stability_levels, function(sep) {
+  simulate_dynamic_synergy_data(
+    N = 20, K = 3, r = 3, M = 8, T_each = 100,
+    cluster_sep_spatial = 1.0,
+    cluster_sep_temporal = 1.0,
+    cluster_sep_stability = sep,
+    seed = 900
+  )
+})
+
+# Visualize noise profiles across stability separation levels
+plots_stability <- lapply(seq_along(stability_levels), function(i) {
+  plot_noise_profiles(sims_stability[[i]], theme_base_size = 10) +
+    ggtitle(paste0("Stability Sep = ", stability_levels[i]))
+})
+
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  patchwork::wrap_plots(plots_stability, nrow = 1)
+}
+```
+
+**Interpretation**: As stability separation increases, the noise characteristics become more differentiated across clusters. At low separation, all clusters have similar noise levels. At high separation, the clusters show clearly distinct stability profiles, ranging from precise control to adaptive/exploratory control.
+
+### Combined Effect on Cluster Separability
+
+Let's examine how varying all three axes simultaneously affects cluster separability:
+
+```{r combined_effect, fig.width=12, fig.height=8, eval=has_viridis}
+# Create a grid of parameter combinations
+param_grid <- expand.grid(
+  spatial = c(0.5, 1.5),
+  temporal = c(0.5, 1.5),
+  stability = c(0.5, 1.5)
+)
+
+sims_combined <- lapply(seq_len(nrow(param_grid)), function(i) {
+  simulate_dynamic_synergy_data(
+    N = 20, K = 3, r = 3, M = 8, T_each = 100,
+    cluster_sep_spatial = param_grid$spatial[i],
+    cluster_sep_temporal = param_grid$temporal[i],
+    cluster_sep_stability = param_grid$stability[i],
+    seed = 1000 + i
+  )
+})
+
+# Visualize embeddings
+plots_combined <- lapply(seq_len(nrow(param_grid)), function(i) {
+  title <- sprintf("Sp=%.1f, Tp=%.1f, St=%.1f",
+                   param_grid$spatial[i],
+                   param_grid$temporal[i],
+                   param_grid$stability[i])
+  plot_cluster_embedding(sims_combined[[i]], method = "pca", theme_base_size = 9) +
+    ggtitle(title)
+})
+
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  patchwork::wrap_plots(plots_combined, nrow = 2)
+}
+```
+
+**Interpretation**: This factorial design reveals how the three control axes interact to determine overall cluster separability. When all three axes have high separation values, clusters are maximally distinct. When all have low values, clusters overlap considerably. Intermediate combinations produce varying degrees of separability, which can be used to create simulation scenarios of different difficulty levels for testing clustering algorithms.
+
+## Interpretation
+
+The three control axes provide a principled framework for understanding and simulating motor control diversity:
+
+### Spatial Axis: Muscle Recruitment Strategies
+
+The spatial axis captures differences in which muscle groups are preferentially recruited. In real-world contexts:
+
+- **Proximal-dominant patterns** might represent strategies that rely heavily on hip and trunk muscles, common in individuals with distal weakness or in power-focused movements
+- **Distal-dominant patterns** might represent strategies emphasizing ankle and foot control, common in precision tasks or in individuals with proximal weakness
+- **Balanced patterns** might represent well-coordinated strategies that distribute load across muscle groups
+
+### Temporal Axis: Coordination Strategies
+
+The temporal axis captures differences in how muscles are coordinated over time:
+
+- **Co-contraction (rigid)** represents simultaneous activation of multiple muscle groups, providing stability but at the cost of efficiency. This is common in novice performers or in unstable conditions
+- **Alternating (efficient)** represents sequential activation with minimal overlap, maximizing efficiency. This is characteristic of skilled performers in rhythmic tasks
+- **Adaptive (reactive)** represents variable timing patterns that allow flexibility in response to changing task demands, common in complex or unpredictable environments
+
+### Stability Axis: Control Precision vs. Adaptability
+
+The stability axis captures the trade-off between precise, consistent control and flexible, adaptive control:
+
+- **Stable control** (low noise) represents highly practiced, automated movements with minimal variability. This is characteristic of elite athletes or late-stage rehabilitation patients
+- **Moderate control** represents a balance between consistency and flexibility
+- **Adaptive control** (high noise) represents exploratory, variable movements that allow learning and adaptation. This is characteristic of early-stage learning or rehabilitation
+
+### Factorial Design Possibilities
+
+By independently manipulating these three axes, researchers can create factorial designs to investigate:
+
+1. **Algorithm robustness**: Test whether clustering algorithms can recover true structure under varying levels of separation
+2. **Feature importance**: Determine which aspects of motor control (spatial, temporal, stability) are most informative for subgroup identification
+3. **Sample size requirements**: Assess how many subjects are needed to reliably detect clusters with different separation characteristics
+4. **Model selection**: Compare different mixture models (MFA, MPCA, etc.) under controlled conditions
+
+## Reproducibility
+
+All simulations in this tutorial are fully reproducible through the use of random seeds. The simulation function and all visualization functions are thoroughly tested:
+
+- **Simulation tests**: `tests/test_simulation_v2.R` validates the three-axis control system
+- **Visualization tests**: `tests/test_visualization_v2.R` ensures all plotting functions generate proper outputs
+
+These tests can be run using:
+
+```{r eval=FALSE}
+# Run simulation tests
+source(system.file("tests", "test_simulation_v2.R", package = "synergyMixR"))
+
+# Run visualization tests
+source(system.file("tests", "test_visualization_v2.R", package = "synergyMixR"))
+```
+
+### Integration with MFA/MPCA Analysis Pipelines
+
+The simulated data can be directly used with the package's mixture model fitting functions:
+
+```{r eval=FALSE}
+# Example: Fit MFA model to simulated data
+mfa_fit <- mfa_em_fit(
+  list_of_data = sim$X_list,
+  K = 3,
+  r = 3,
+  n_init = 10,
+  max_iter = 100
+)
+
+# Compare true vs. estimated cluster assignments
+library(mclust)
+ari <- adjustedRandIndex(sim$z_true, mfa_fit$z)
+cat("Adjusted Rand Index:", ari, "\n")
+
+# Visualize results with estimated clusters
+plot_cluster_embedding(sim, fit = mfa_fit, method = "umap")
+```
+
+This integration enables comprehensive benchmarking studies where ground truth is known, allowing rigorous evaluation of model performance under controlled conditions.
+
+## Summary
+
+The `simulate_dynamic_synergy_data()` function and accompanying visualization suite provide a powerful framework for:
+
+1. **Generating realistic synthetic data** with controlled characteristics across three orthogonal dimensions of motor control
+2. **Visualizing complex patterns** in spatial synergy structure, temporal coordination, and stability profiles
+3. **Conducting systematic studies** through factorial designs that independently manipulate control axes
+4. **Benchmarking algorithms** under known ground truth conditions
+5. **Exploring motor control theory** by simulating different coordination strategies and control profiles
+
+By providing fine-grained control over data characteristics while maintaining biological plausibility, this framework enables rigorous, reproducible research in muscle synergy analysis and motor control.
+
+## Session Information
+
+```{r session_info}
+sessionInfo()
+```

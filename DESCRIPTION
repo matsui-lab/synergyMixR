@@ -1,0 +1,58 @@
+Package: synergyMixR
+Type: Package
+Title: Mixture-Based Muscle Synergy Analysis
+Version: 1.0.0
+Authors@R: c(
+    person("Yusuke", "Matsui",
+           email = "matsui@nagoya-u.jp",
+           role = c("aut", "cre"))
+    )
+Author: Yusuke Matsui [aut, cre]
+Maintainer: Yusuke Matsui <matsui@nagoya-u.jp>
+Description: Provides tools for analyzing muscle synergy using various
+    statistical methods including MPCA and MFA. Enables researchers to identify
+    distinct subgroups within populations that exhibit different muscle synergy
+    patterns, rather than forcing all subjects into a single global model.
+License: GPL-3 + file LICENSE
+URL: https://github.com/matsui-lab/synergyMixR
+BugReports: https://github.com/matsui-lab/synergyMixR/issues
+Encoding: UTF-8
+SystemRequirements: GNU make
+LazyData: true
+Depends: R (>= 4.1.0)
+RoxygenNote: 7.3.3
+Imports:
+    stats,
+    utils,
+    Rcpp,
+    mvtnorm,
+    parallel,
+    magrittr,
+    signal,
+    tidyselect,
+    ggplot2
+LinkingTo: Rcpp, RcppArmadillo
+VignetteBuilder: knitr
+Suggests:
+    dplyr,
+    tidyr,
+    reshape2,
+    mclust,
+    ggrepel,
+    stringr,
+    clue,
+    rlang,
+    knitr,
+    rmarkdown,
+    psych,
+    viridis,
+    patchwork,
+    uwot,
+    pbapply,
+    testthat,
+    future,
+    future.apply,
+    future.batchtools,
+    progressr,
+    purrr,
+    umap

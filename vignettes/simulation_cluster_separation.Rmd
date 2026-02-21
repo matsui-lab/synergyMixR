@@ -1,0 +1,153 @@
+---
+title: 'Simulation Study: Effect of Cluster Separation on Model Performance'
+author: "synergyMixR Team"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Simulation Study: Effect of Cluster Separation on Model Performance}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.path = "figures/sim-sep-",
+  eval = FALSE
+)
+
+library(synergyMixR)
+library(parallel)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+# 1 Overview
+
+This vignette replicates **Simulation 2** from the manuscript, in which we examine how
+*between-cluster separation* ($\text{sep}$) influences the ability of
+
+* **Mixture Factor Analysis (MFA)** and **Mixture PCA (MPCA)**
+* **SingleFA** and **SinglePCA**
+
+to recover latent sub-groups and reconstruct EMG signals.
+
+The procedure varies the *separation hyper-parameter* $\text{sep}\in\{0.1,0.3,0.5,0.7,0.9,1.0\}$ while keeping
+all other generative settings fixed (Table 1).  After fitting each candidate model, we record
+
+* Bayesian Information Criterion (BIC),
+* Adjusted Rand Index (ARI) against the true cluster labels, and
+* Variance Accounted For (VAF).
+
+# 2 Simulation design
+
+| Parameter                  | Value                      | R argument        |
+| -------------------------- | -------------------------- | ----------------- |
+| Number of subjects         | $N=50$                     | `N_vec = 50`      |
+| True clusters              | $K_{true}=4$               | `K_true_vec = 4`  |
+| Rank per cluster           | $r_{true}=4$               | `r_true_vec = 4`  |
+| Muscles (channels)         | $M=8$                      | `M_vec = 8`       |
+| Time points                | $T=100$                    | `T_each = 100`    |
+| Between-cluster separation | $\text{sep}=0.1\dots1.0$   | `sep_vec`         |
+| Noise SD                   | $\sigma=2.0$               | `noise_vec = 2.0` |
+| Candidate ranks            | $r\in[3,5]$                | `r_candidates`    |
+| Candidate clusters         | $K\in[1,5]$                | `K_candidates`    |
+| EM iterations              | 20                         | `max_iter`        |
+| Random restarts            | 5                          | `n_rep_init`      |
+
+
+> **Tip.**  Use fewer values or a smaller `max_iter` when prototyping to speed up the vignette build.
+
+
+# 3 Running the simulation
+
+```{r simulate}
+
+set.seed(123)  # reproducibility of meta-parameters
+
+result_dir <- "simulation_sep"
+
+# This runs all combinations in parallel and saves .rds files
+simulate_and_run_parallel_save(
+  K_true_vec    = 4,
+
+  r_true_vec    = 4,
+  N_vec         = 50,
+  M_vec         = 8,
+  T_each        = 100,
+  sep_vec       = seq(0.1, 1, 0.2),  # 0.1 to 1.0
+  noise_vec     = 2.0,
+  K_candidates  = 1:5,
+  r_candidates  = 3:5,
+  max_iter      = 20,
+  n_rep_init    = 5,
+  seed_data_base = 1000,
+  mc.cores      = 10,
+
+  output_dir    = result_dir
+)
+
+```
+
+
+
+The function automatically uses `parallel::mclapply()` internally, storing one `.rds` file per scenario.
+
+# 4 Aggregating results
+
+After running the simulation, you can load and aggregate the results:
+
+```{r load-results, message=FALSE, warning=FALSE}
+result_dir <- "simulation_sep"  # adjust to your path
+
+# Load all .rds files from the result directory
+rds_files <- list.files(result_dir, pattern = "\\.rds$", full.names = TRUE)
+df_raw <- do.call(rbind, lapply(rds_files, readRDS))
+
+# Compute summary table
+df_result <- compute_ari_vaf_table(df_raw) %>%
+  mutate(across(c(sep, noise), as.factor))
+
+head(df_result)
+```
+
+We reshape the data to *long* format for ggplot convenience:
+
+```{r tidy}
+df_long_ari <- df_result %>%
+  select(K_true, r_true, N, M, sep, noise, ARI_MFA, ARI_PCA) %>%
+  pivot_longer(c(ARI_MFA, ARI_PCA),
+               names_to  = "Method",
+               values_to = "ARI")
+```
+
+# 5 Visualisation
+
+## 5.1 Clustering accuracy (ARI)
+
+```{r ari-plot, fig.cap="ARI versus true cluster count, facetted by separation / noise."}
+ggplot(df_long_ari,
+       aes(x = factor(K_true), y = ARI, fill = Method)) +
+  geom_boxplot(position = position_dodge(width = 0.8), outlier.shape = NA) +
+  facet_wrap(~ paste("sep =", sep, " noise =", noise), nrow = 2) +
+  theme_bw() +
+  labs(title = "Adjusted Rand Index (ARI)",
+       x = "True K", y = "ARI", fill = "Model")
+```
+
+## 5.2 Model fit (BIC & VAF)
+
+```{r bic-vaf-plots, echo=FALSE}
+# Example combined figure (optional)
+```
+
+> **Observation.** Higher separation ($\text{sep}\ge 0.5$) makes cluster boundaries more distinct, leading to ARI close to 1 for MFA and MPCA.  When clusters overlap ($\text{sep}=0.1$), both mixture models struggle, yet still outperform single-subject baselines.
+
+# 6 Session information
+
+```{r session, echo=FALSE, eval=TRUE}
+sessionInfo()
+```

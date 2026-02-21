@@ -1,0 +1,506 @@
+---
+title: "Metrics Reference: Selection Criteria for K and r"
+author: "Yusuke Matsui"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Metrics Reference: Selection Criteria for K and r}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  eval = FALSE
+)
+```
+
+## Introduction
+
+This reference document provides detailed explanations of all metrics used for selecting the optimal number of factors (r) and clusters (K) in mixture-based muscle synergy analysis. Each metric has specific strengths and limitations, making it important to understand when and how to use each one.
+
+## Quick Reference Table
+
+| Metric | Purpose | Direction | Best For | Limitations |
+|--------|---------|-----------|----------|-------------|
+| **CV** | Generalization | Lower | Global r estimation | Computationally expensive |
+| **VAF** | Reconstruction | Higher | Minimum r threshold | Cannot detect overfitting |
+| **BIC** | Model complexity | Lower | Joint K,r selection | Sensitive to sample size |
+| **Smoothness** | Temporal quality | Lower | EMG-specific validation | Domain-specific |
+| **VSS** | Interpretability | Higher | Post-rotation evaluation | Requires rotation |
+| **PA** | Dimension estimation | Count | Exploratory analysis | Conservative |
+
+## Detailed Metric Descriptions
+
+---
+
+### Cross-Validation (CV)
+
+#### Theoretical Background
+
+Cross-validation estimates the model's ability to generalize to unseen data. In the context of factor analysis, we use leave-one-subject-out CV:
+
+For each subject $i$:
+1. Fit model on $N-1$ subjects (excluding $i$)
+2. Compute error on held-out subject $i$
+3. Average errors across all subjects
+
+#### Mathematical Formulation
+
+**Negative Log-Likelihood CV:**
+$$
+\text{CV}_{\text{NegLogLik}} = \frac{1}{N} \sum_{i=1}^{N} -\log p(X_i | \hat{\theta}_{-i})
+$$
+
+**Frobenius Norm CV:**
+$$
+\text{CV}_{\text{Frob}} = \frac{1}{N} \sum_{i=1}^{N} \|X_i - \hat{X}_{i,-i}\|_F^2
+$$
+
+where $\hat{\theta}_{-i}$ are parameters estimated without subject $i$.
+
+#### Implementation
+
+```{r cv-implementation}
+library(synergyMixR)
+
+# CV-based r selection
+result_cv <- select_r(
+  list_of_data,
+  method = "cv",
+  rvec = 2:6,
+  model_type = "MFA"
+)
+
+# View results
+print(result_cv)
+cat("Selected r:", result_cv$r_selected, "\n")
+
+# Visualize
+plot(result_cv$rvec, result_cv$cv_errors, type = "b",
+     xlab = "r", ylab = "CV Error",
+     main = "Cross-Validation Curve")
+abline(v = result_cv$r_selected, col = "red", lty = 2)
+```
+
+#### When to Use
+
+- **Primary use case**: Global r estimation before considering cluster structure
+- **Data requirements**: Sufficient subjects (N >= 15-20 recommended)
+- **Computational note**: Most expensive metric; consider reducing `n_init` for speed
+
+#### Interpretation Guidelines
+
+| CV Curve Pattern | Interpretation | Action |
+|------------------|----------------|--------|
+| Clear minimum | Strong signal for optimal r | Use minimum |
+| Flat curve | r has little effect | Consider smallest r |
+| Monotonic decrease | May need larger r range | Expand rvec |
+| Noisy curve | Unstable estimation | Increase n_init or subjects |
+
+---
+
+### Variance Accounted For (VAF)
+
+#### Theoretical Background
+
+VAF measures the proportion of total variance in the data explained by the model. It is analogous to $R^2$ in regression.
+
+#### Mathematical Formulation
+
+$$
+\text{VAF} = 1 - \frac{\text{SSE}}{\text{SST}} = 1 - \frac{\sum_{i=1}^{N} \|X_i - \hat{X}_i\|_F^2}{\sum_{i=1}^{N} \|X_i - \bar{X}\|_F^2}
+$$
+
+where:
+- $X_i$ is the observed data for subject $i$
+- $\hat{X}_i$ is the reconstructed data
+- $\bar{X}$ is the grand mean across all subjects
+
+#### Implementation
+
+```{r vaf-implementation}
+# Compute VAF for a fitted model
+vaf <- compute_global_vaf_mfa(list_of_data, mfa_fit)
+cat("Global VAF:", round(vaf, 4), "\n")
+
+# VAF-based r selection
+result_vaf <- select_r_by_vaf_mfa(
+  list_of_data,
+  K = 3,
+  rvec = 2:6,
+  vaf_threshold = 0.90  # Select smallest r achieving 90% VAF
+)
+
+cat("Selected r:", result_vaf$best_r, "\n")
+print(result_vaf$summary)
+```
+
+#### VAF Thresholds in Literature
+
+| Domain | Typical Threshold | Reference |
+|--------|-------------------|-----------|
+| Muscle synergy (locomotion) | 0.90 | Ivanenko et al., 2004 |
+| Muscle synergy (reaching) | 0.85-0.90 | d'Avella et al., 2006 |
+| General EMG analysis | 0.80-0.85 | Tresch et al., 2006 |
+
+#### Caution: VAF Alone is Insufficient
+
+VAF increases monotonically with r. Choosing r based only on VAF will favor overfitting:
+
+```{r vaf-monotonic}
+# Demonstrate VAF's monotonic increase
+for (r in 1:6) {
+  fit <- mfa_em_fit(list_of_data, K = 3, r = r, n_init = 1)
+  vaf_r <- compute_global_vaf_mfa(list_of_data, fit)
+  cat("r =", r, ": VAF =", round(vaf_r, 4), "\n")
+}
+# Output: VAF always increases with r
+```
+
+**Solution**: Use VAF as a threshold constraint, not the primary selection criterion.
+
+---
+
+### Bayesian Information Criterion (BIC)
+
+#### Theoretical Background
+
+BIC balances model fit (likelihood) against model complexity (number of parameters). It penalizes complex models to prevent overfitting.
+
+#### Mathematical Formulation
+
+$$
+\text{BIC} = -2 \log L(\hat{\theta}) + p \log(n)
+$$
+
+where:
+- $L(\hat{\theta})$ is the maximized likelihood
+- $p$ is the number of free parameters
+- $n$ is the sample size (total time points)
+
+For MFA:
+$$
+p = K \cdot (M \cdot r + 2M) + (K - 1)
+$$
+
+- $M \cdot r$: loadings per cluster
+- $2M$: means and diagonal noise per cluster
+- $K - 1$: mixing proportions
+
+#### Implementation
+
+```{r bic-implementation}
+# Compute BIC for a single model
+loglik <- mfa_fit$logLik
+bic <- compute_BIC_mfa(loglik, K = 3, r = 4, M = 8, N_total_rows = 6000)
+
+# Grid search with BIC selection
+grid_result <- select_optimal_K_r_mfa(
+  list_of_data,
+  Kvec = 1:5,
+  rvec = 1:5
+)
+
+# View BIC surface
+print(grid_result$summary)
+
+# Visualize BIC heatmap
+library(ggplot2)
+ggplot(grid_result$summary, aes(x = r, y = K, fill = BIC)) +
+  geom_tile() +
+  scale_fill_viridis_c(direction = -1) +
+  geom_point(data = grid_result$best_model_info,
+             aes(x = r, y = K), color = "red", size = 4)
+```
+
+#### BIC vs AIC
+
+| Criterion | Penalty | Tendency |
+|-----------|---------|----------|
+| BIC | $p \log(n)$ | More parsimonious (prefers simpler models) |
+| AIC | $2p$ | Less conservative |
+
+For muscle synergy analysis with moderate sample sizes, BIC is generally preferred.
+
+#### Sample Size Sensitivity
+
+BIC's penalty term $p \log(n)$ grows with sample size. With very large datasets:
+- BIC may select very simple models
+- Consider AIC or cross-validation as alternatives
+
+---
+
+### Smoothness Penalty
+
+#### Theoretical Background
+
+The smoothness penalty is designed for time-series data like EMG. It measures how "wiggly" the factor scores are over time. When r is too large, models tend to fit high-frequency noise, producing non-smooth factors.
+
+#### Mathematical Formulation
+
+Using second-order differences:
+$$
+\text{Smoothness} = \sum_{i=1}^{N} \sum_{j=1}^{r} \sum_{t=3}^{T_i} (z_{i,j,t} - 2z_{i,j,t-1} + z_{i,j,t-2})^2
+$$
+
+This is equivalent to summing the squared discrete second derivatives of all factor score time series.
+
+#### Implementation
+
+```{r smoothness-implementation}
+# Compute factor scores first
+mfa_fit <- compute_factor_scores_mfa(mfa_fit, list_of_data)
+
+# Compute smoothness
+smoothness <- compute_smoothness_penalty(mfa_fit$factor_scores)
+cat("Smoothness penalty:", smoothness, "\n")
+
+# Compare smoothness across r values
+for (r in 2:6) {
+  fit <- mfa_em_fit(list_of_data, K = 3, r = r, n_init = 1)
+  fit <- compute_factor_scores_mfa(fit, list_of_data)
+  smooth_r <- compute_smoothness_penalty(fit$factor_scores)
+  cat("r =", r, ": Smoothness =", round(smooth_r, 2), "\n")
+}
+```
+
+#### Interpretation
+
+| Smoothness Level | Interpretation |
+|------------------|----------------|
+| Low | Smooth, physiologically plausible activations |
+| High | Noisy, potentially overfitting high-frequency components |
+
+#### Typical Pattern
+
+As r increases:
+1. Initially: smoothness may stay low (capturing true structure)
+2. Eventually: smoothness increases sharply (fitting noise)
+
+Look for the "elbow" where smoothness begins to increase rapidly.
+
+#### Muscle Synergy Context
+
+In muscle synergy analysis, factor scores represent muscle activation patterns that should:
+- Vary smoothly over the movement cycle
+- Not contain high-frequency oscillations (unless physiologically meaningful)
+- Reflect coordinated motor control
+
+---
+
+### Very Simple Structure (VSS)
+
+#### Theoretical Background
+
+VSS evaluates the interpretability of factor loadings. The concept of "simple structure" (Thurstone, 1947) suggests that each variable (muscle) should load primarily on one factor (synergy).
+
+#### Mathematical Formulation
+
+**Threshold Method:**
+$$
+\text{VSS}_{\text{threshold}} = \frac{1}{K \cdot M} \sum_{k=1}^{K} \sum_{m=1}^{M} \mathbb{1}\left[\sum_{j=1}^{r} \mathbb{1}(|\lambda_{k,m,j}| > \tau) = 1\right]
+$$
+
+Counts the proportion of muscles with exactly one loading above threshold $\tau$.
+
+**Ratio Method:**
+$$
+\text{VSS}_{\text{ratio}} = \frac{1}{K \cdot M} \sum_{k=1}^{K} \sum_{m=1}^{M} \frac{\max_j(\lambda_{k,m,j}^2)}{\sum_j \lambda_{k,m,j}^2}
+$$
+
+Measures how concentrated each muscle's loading is on its dominant factor.
+
+#### Implementation
+
+```{r vss-implementation}
+# Compute VSS
+vss_thresh <- compute_vss_criterion(mfa_fit$Lambda, threshold = 0.5, method = "threshold")
+vss_ratio <- compute_vss_criterion(mfa_fit$Lambda, method = "ratio")
+
+cat("VSS (threshold):", round(vss_thresh, 4), "\n")
+cat("VSS (ratio):", round(vss_ratio, 4), "\n")
+
+# VSS after rotation (recommended)
+rotated_fit <- rotate_mfa_model(mfa_fit, rotation = "varimax")
+vss_rotated <- compute_vss_criterion(rotated_fit$Lambda, method = "ratio")
+cat("VSS after varimax:", round(vss_rotated, 4), "\n")
+```
+
+#### Rotation Importance
+
+Unrotated factor loadings often do not exhibit simple structure. Apply varimax (or another rotation) before computing VSS:
+
+```{r vss-rotation-effect}
+# Without rotation - often lower VSS
+vss_unrot <- compute_vss_criterion(mfa_fit$Lambda, rotate = "none")
+
+# With rotation - typically higher VSS
+vss_rot <- compute_vss_criterion(mfa_fit$Lambda, rotate = "varimax")
+
+cat("Unrotated VSS:", round(vss_unrot, 4), "\n")
+cat("Rotated VSS:", round(vss_rot, 4), "\n")
+```
+
+#### Interpretation Guidelines
+
+| VSS Score | Interpretation |
+|-----------|----------------|
+| > 0.8 | Excellent simple structure |
+| 0.6 - 0.8 | Good simple structure |
+| 0.4 - 0.6 | Moderate; some complex loadings |
+| < 0.4 | Poor simple structure; difficult to interpret |
+
+---
+
+### Parallel Analysis (PA)
+
+#### Theoretical Background
+
+Parallel analysis compares observed eigenvalues to those expected from random data. Factors are retained only if their eigenvalues exceed the random baseline.
+
+#### Algorithm
+
+1. Compute eigenvalues of pooled covariance matrix: $\lambda_1 \geq \lambda_2 \geq ... \geq \lambda_M$
+2. Generate B random permutations of the data
+3. For each permutation, compute eigenvalues
+4. Calculate 95th percentile of random eigenvalues: $\lambda^{95}_1, ..., \lambda^{95}_M$
+5. Select r = max{j : $\lambda_j > \lambda^{95}_j$}
+
+#### Implementation
+
+```{r pa-implementation}
+# Global MFA-based r estimation
+result_pa <- select_r_global_mfa(
+  list_of_data,
+  rvec = 1:8
+)
+
+cat("Selected r:", result_pa$r_global, "\n")
+
+# View results
+print(result_pa)
+```
+
+#### Characteristics
+
+**Strengths:**
+- Objective, data-driven threshold
+- No arbitrary VAF cutoff needed
+- Good for exploratory analysis
+
+**Limitations:**
+- Conservative (may underestimate r)
+- Ignores cluster structure
+- Assumes single population
+
+---
+
+## Metric Comparison and Selection Strategy
+
+### Single Metric Usage
+
+| Metric | When to Use Alone |
+|--------|-------------------|
+| CV | Global r estimation with sufficient data |
+| BIC | Joint K,r selection via grid search |
+| PA | Quick exploratory analysis |
+
+### Recommended Combinations
+
+#### Conservative Selection (Avoid Overfitting)
+
+```{r conservative}
+# Prioritize BIC and smoothness
+result <- select_r_multicriteria_mfa(
+  list_of_data, K = 3, rvec = 2:6,
+  weights = c(BIC = 2, VAF = 1, smoothness = 2, VSS = 1)
+)
+```
+
+#### Interpretability Focus
+
+```{r interpretability}
+# Prioritize VSS
+result <- select_r_multicriteria_mfa(
+  list_of_data, K = 3, rvec = 2:6,
+  weights = c(BIC = 1, VAF = 1, smoothness = 1, VSS = 2)
+)
+```
+
+#### Balanced Approach (Recommended Default)
+
+```{r balanced}
+result <- select_r_multicriteria_mfa(
+  list_of_data, K = 3, rvec = 2:6,
+  vaf_threshold = 0.85,
+  weights = c(BIC = 1, VAF = 1, smoothness = 1, VSS = 1)
+)
+```
+
+### Decision Framework
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Step 1: Establish baseline with global CV                   │
+│ r_cv = select_r(method = "cv", ...)$r_selected               │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Step 2: Check VAF threshold                                  │
+│ If VAF(r_cv) < 0.85 → consider larger r                     │
+│ If VAF(r_cv) > 0.95 → may be overfitting, check smoothness  │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Step 3: Validate with secondary metrics                      │
+│ - Check smoothness (should not spike)                       │
+│ - Check VSS after rotation (should be reasonable)           │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Step 4: Joint K,r selection with BIC                        │
+│ Use focused rvec around validated r                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Summary
+
+### Key Takeaways
+
+1. **No single metric is perfect** - each has strengths and limitations
+2. **CV is the gold standard** for generalization but is computationally expensive
+3. **VAF should be a constraint**, not the primary criterion
+4. **BIC works well for joint K,r selection** with moderate sample sizes
+5. **Smoothness is EMG-specific** - leverage temporal structure of your data
+6. **VSS requires rotation** - always apply varimax before evaluation
+7. **PA is conservative** - useful for exploratory analysis
+
+### Recommended Workflow
+
+1. Start with global CV or PA for r estimation
+2. Set VAF >= 0.85 as minimum threshold
+3. Use multi-criteria selection with balanced weights
+4. Validate final selection with smoothness and VSS
+5. Visualize loadings and scores for interpretability
+
+## References
+
+- Ivanenko, Y. P., et al. (2004). Five basic muscle activation patterns account for muscle activity during human locomotion. *Journal of Physiology*.
+- d'Avella, A., et al. (2006). Control of fast-reaching movements by muscle synergy combinations. *Journal of Neuroscience*.
+- Tresch, M. C., et al. (2006). Matrix factorization algorithms for the identification of muscle synergies. *Journal of Neurophysiology*.
+- Revelle, W., & Rocklin, T. (1979). Very simple structure: An alternative procedure for estimating the optimal number of interpretable factors. *Multivariate Behavioral Research*.
+- Horn, J. L. (1965). A rationale and test for the number of factors in factor analysis. *Psychometrika*.
+
+## Session Info
+
+```{r session}
+sessionInfo()
+```

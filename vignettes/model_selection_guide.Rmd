@@ -1,0 +1,477 @@
+---
+title: "Comprehensive Guide to K and r Model Selection"
+author: "Yusuke Matsui"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Comprehensive Guide to K and r Model Selection}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+ fig.height = 6,
+  eval = FALSE
+)
+```
+
+## Introduction
+
+This vignette provides a comprehensive guide to selecting the optimal number of clusters (K) and factors (r) in mixture-based muscle synergy analysis. While individual selection methods are documented elsewhere, this guide focuses on:
+
+1. **Two-stage K,r selection**: A stable approach for joint optimization
+2. **Post-hoc evaluation**: Tools for comparing multiple model candidates
+3. **Integrated workflow**: End-to-end decision-making process for analysts
+
+## Load Package and Example Data
+
+```{r load}
+library(synergyMixR)
+
+# Generate synthetic data
+sim_data <- generate_synergy_data(
+  N = 60, K = 3, r = 4, M = 8,
+  T_each = 100,
+  cluster_sep_spatial = 1.0,
+  seed = 42
+)
+
+list_of_data <- sim_data$list_of_data
+z_true <- sim_data$true_cluster
+cat("True: K =", 3, ", r =", 4, "\n")
+```
+
+## Part 1: Two-Stage K,r Selection
+
+### Why Two-Stage?
+
+In mixture models, K (number of clusters) and r (number of factors) have strong interactions. Simultaneously searching over all (K, r) combinations can be:
+
+- **Computationally expensive**: O(|Kvec| × |rvec|) model fits
+- **Unstable**: Different initializations may prefer different (K, r) pairs
+- **Confounded**: Increasing K can compensate for inadequate r, and vice versa
+
+The two-stage approach addresses these issues by:
+
+1. First fixing r and optimizing K
+2. Then fixing K at the optimal value and optimizing r
+
+### Algorithm
+
+```
+Stage 1: K Selection (r fixed)
+├── Fix r = r_fixed (default: 2)
+├── For each K in Kvec:
+│   └── Fit model, compute BIC
+└── Select best_K = argmin(BIC)
+
+Stage 2: r Selection (K fixed)
+├── Fix K = best_K
+├── For each r in rvec:
+│   └── Fit model, compute BIC
+└── Select best_r = argmin(BIC)
+```
+
+### Usage Example
+
+```{r twostage-mfa}
+# Two-stage selection for MFA
+result_2stage <- select_optimal_K_r_mfa_twostage(
+  list_of_data,
+  Kvec = 2:5,      # Candidates for K
+  rvec = 1:6,      # Candidates for r
+  r_fixed = 2,     # Fixed r for Stage 1
+  max_iter = 50,
+  n_init = 3,
+  use_kmeans_init = TRUE
+)
+
+# Results
+cat("=== Two-Stage Selection Results ===\n")
+cat("Stage 1 (K search with r =", 2, "):\n")
+print(result_2stage$stage1_summary)
+
+cat("\nStage 2 (r search with K =", result_2stage$best_K, "):\n")
+print(result_2stage$stage2_summary)
+
+cat("\nFinal selection: K =", result_2stage$best_K, ", r =", result_2stage$best_r, "\n")
+```
+
+### For MPCA Models
+
+```{r twostage-mpca}
+# Two-stage selection for MPCA
+result_2stage_mpca <- select_optimal_K_r_mpca_twostage(
+  list_of_data,
+  Kvec = 2:5,
+  rvec = 1:6,
+  r_fixed = 2,
+  method = "EM"
+)
+
+cat("MPCA: K =", result_2stage_mpca$best_K, ", r =", result_2stage_mpca$best_r, "\n")
+```
+
+### Choosing r_fixed
+
+The `r_fixed` parameter in Stage 1 affects the K selection. Guidelines:
+
+| r_fixed | When to Use |
+|---------|-------------|
+| 2 (default) | Safe default for most applications |
+| 3-4 | When you expect moderate synergy complexity |
+| 1 | When data is very noisy or sample size is small |
+
+If you have prior knowledge about r (e.g., from literature or global r estimation), use that value:
+
+```{r rfixed-from-global}
+# Use global r estimate as r_fixed
+global_result <- select_r_global_mfa(list_of_data, rvec = 2:6)
+r_estimated <- global_result$r_global
+
+result_informed <- select_optimal_K_r_mfa_twostage(
+  list_of_data,
+  Kvec = 2:5,
+  rvec = 1:6,
+  r_fixed = r_estimated  # Use estimated r
+)
+```
+
+### Comparison: Two-Stage vs Grid Search
+
+| Method | Complexity | Stability | Optimality |
+|--------|------------|-----------|------------|
+| Grid Search | O(|Kvec| × |rvec|) | Low (many local minima) | High (explores all) |
+| Two-Stage | O(|Kvec| + |rvec|) | High (sequential) | Moderate (depends on r_fixed) |
+
+**Recommendation**:
+- Use **two-stage** for initial exploration or when computation is limited
+- Use **grid search** for final model selection when resources allow
+
+## Part 2: Post-Hoc Evaluation
+
+After running a grid search, you may want to compare multiple (K, r) candidates beyond just BIC. The post-hoc evaluation functions provide additional metrics.
+
+### posthoc_mfa_evaluation()
+
+This function computes additional metrics for all models from a grid search:
+
+```{r posthoc}
+# First, run grid search
+grid_result <- select_optimal_K_r_mfa(
+  list_of_data,
+  Kvec = 2:4,
+  rvec = 2:5,
+  n_init = 3
+)
+
+# Post-hoc evaluation
+df_posthoc <- posthoc_mfa_evaluation(list_of_data, grid_result)
+
+# View results (sorted by BIC)
+print(df_posthoc)
+```
+
+### Output Columns
+
+| Column | Description | Good Value |
+|--------|-------------|------------|
+| `K` | Number of clusters | - |
+| `r` | Number of factors | - |
+| `logLik` | Log-likelihood | Higher is better |
+| `BIC` | Bayesian Information Criterion | Lower is better |
+| `GlobalVAF` | Variance Accounted For | > 0.85 |
+| `minClusterSize` | Smallest cluster size | > N/(2K) |
+| `maxClusterSize` | Largest cluster size | < N - N/(2K) |
+
+### Interpreting Cluster Sizes
+
+Extreme cluster size imbalance can indicate:
+
+- **Overfitting**: One cluster captures outliers
+- **Wrong K**: True K may be different
+- **Poor initialization**: Try more `n_init`
+
+```{r cluster-balance}
+# Check for balanced clusters
+df_balanced <- df_posthoc[
+  df_posthoc$minClusterSize >= 10 &  # At least 10 subjects per cluster
+  df_posthoc$GlobalVAF >= 0.85,      # Adequate reconstruction
+]
+
+cat("Candidates with balanced clusters and good VAF:\n")
+print(df_balanced)
+```
+
+### get_model_by_K_r()
+
+Retrieve a specific model for detailed analysis:
+
+```{r get-model}
+# Get a model that's not BIC-optimal but has other desirable properties
+# e.g., higher VAF, more balanced clusters
+alt_model <- get_model_by_K_r(grid_result, K_target = 3, r_target = 4)
+
+if (!is.null(alt_model)) {
+  # Analyze this model
+  alt_model <- compute_factor_scores_mfa(alt_model, list_of_data)
+
+  # Visualize synergy patterns
+  plot_cluster_synergy_loadings_mfa(alt_model, plot_type = "heatmap")
+
+  # Check factor score smoothness
+  smoothness <- compute_smoothness_penalty(alt_model$factor_scores)
+  cat("Smoothness penalty:", smoothness, "\n")
+}
+```
+
+### Comparing Multiple Candidates
+
+```{r compare-candidates}
+# Compare top 3 candidates by different criteria
+top_by_bic <- df_posthoc[order(df_posthoc$BIC), ][1:3, ]
+top_by_vaf <- df_posthoc[order(-df_posthoc$GlobalVAF), ][1:3, ]
+
+cat("Top 3 by BIC:\n")
+print(top_by_bic[, c("K", "r", "BIC", "GlobalVAF")])
+
+cat("\nTop 3 by VAF:\n")
+print(top_by_vaf[, c("K", "r", "BIC", "GlobalVAF")])
+
+# If different, investigate both
+```
+
+## Part 3: Integrated Workflow
+
+This section presents the recommended end-to-end workflow for analysts.
+
+### Workflow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 1: Preliminary Investigation                              │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Global r estimation (K-independent)                         │
+│    select_r_global_mfa(list_of_data, rvec = 2:6)               │
+│    → Obtain r_global as baseline                               │
+│                                                                 │
+│ 2. Visualize CV curve                                          │
+│    plot(result, type = "global_cv")                            │
+└────────────────────┬────────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 2: Joint K,r Selection                                    │
+├─────────────────────────────────────────────────────────────────┤
+│ Option A: Grid Search (comprehensive)                           │
+│   select_optimal_K_r_mfa(Kvec = 1:5, rvec = r_global ± 1)      │
+│                                                                 │
+│ Option B: Two-Stage (efficient)                                 │
+│   select_optimal_K_r_mfa_twostage(Kvec = 2:5, rvec = 1:6,      │
+│                                    r_fixed = r_global)         │
+│                                                                 │
+│ Option C: Hybrid r-Selection (for fixed K)                      │
+│   select_r_mixture(K = 3, rvec = 2:6, mode = "hybrid")         │
+└────────────────────┬────────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 3: Diagnostics and Visualization                          │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Summary statistics                                           │
+│    print(result); summary(result)                               │
+│                                                                 │
+│ 2. Visualizations                                               │
+│    plot(result, type = "overview")                              │
+│    plot_cluster_synergy_loadings_mfa(best_model)               │
+│    plot_all_factor_scores_mfa(best_model, list_of_data)        │
+│                                                                 │
+│ 3. Check for issues                                             │
+│    - Boundary r values                                          │
+│    - Unbalanced clusters                                        │
+│    - Non-smooth factor scores                                   │
+└────────────────────┬────────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 4: Post-Hoc Evaluation and Final Decision                 │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Compare multiple candidates                                   │
+│    df <- posthoc_mfa_evaluation(list_of_data, grid_result)     │
+│                                                                 │
+│ 2. Retrieve alternative models                                   │
+│    alt <- get_model_by_K_r(grid_result, K = 3, r = 4)          │
+│                                                                 │
+│ 3. Final decision based on:                                     │
+│    - BIC vs VAF trade-off                                       │
+│    - Cluster balance                                            │
+│    - Physiological interpretability                             │
+│    - Factor score smoothness                                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Complete Example
+
+```{r complete-workflow}
+# ========================================
+# Phase 1: Preliminary Investigation
+# ========================================
+
+cat("=== Phase 1: Global r Estimation ===\n")
+global_result <- select_r_global_mfa(
+  list_of_data,
+  rvec = 2:6,
+  criterion = "CV"
+)
+r_global <- global_result$r_global
+cat("Estimated r_global:", r_global, "\n")
+
+# ========================================
+# Phase 2: Joint K,r Selection
+# ========================================
+
+cat("\n=== Phase 2: Grid Search ===\n")
+# Focus search around r_global
+rvec_focused <- max(1, r_global - 1):min(8, r_global + 2)
+
+grid_result <- select_optimal_K_r_mfa(
+  list_of_data,
+  Kvec = 1:5,
+  rvec = rvec_focused,
+  n_init = 5,
+  use_kmeans_init = TRUE
+)
+
+best_K <- grid_result$best_model_info$K
+best_r <- grid_result$best_model_info$r
+cat("BIC-optimal: K =", best_K, ", r =", best_r, "\n")
+
+# ========================================
+# Phase 3: Diagnostics
+# ========================================
+
+cat("\n=== Phase 3: Diagnostics ===\n")
+best_model <- grid_result$best_model_info$model
+
+# Compute factor scores
+best_model <- compute_factor_scores_mfa(best_model, list_of_data)
+
+# Check cluster sizes
+cluster_sizes <- table(best_model$z)
+cat("Cluster sizes:", paste(cluster_sizes, collapse = ", "), "\n")
+
+# Check VAF
+vaf <- compute_global_vaf_mfa(list_of_data, best_model)
+cat("Global VAF:", round(vaf, 4), "\n")
+
+# Check smoothness
+smoothness <- compute_smoothness_penalty(best_model$factor_scores)
+cat("Smoothness penalty:", round(smoothness, 2), "\n")
+
+# Visualize
+plot_cluster_synergy_loadings_mfa(best_model, plot_type = "heatmap")
+
+# ========================================
+# Phase 4: Post-Hoc Evaluation
+# ========================================
+
+cat("\n=== Phase 4: Post-Hoc Comparison ===\n")
+df_posthoc <- posthoc_mfa_evaluation(list_of_data, grid_result)
+print(head(df_posthoc, 10))
+
+# Final decision checklist
+cat("\n=== Final Decision Checklist ===\n")
+cat("[ ] VAF >= 0.85:", vaf >= 0.85, "\n")
+cat("[ ] BIC is optimal or near-optimal\n")
+cat("[ ] Clusters are reasonably balanced:",
+    min(cluster_sizes) >= length(list_of_data) / (2 * best_K), "\n")
+cat("[ ] r is not at boundary:",
+    best_r > min(rvec_focused) & best_r < max(rvec_focused), "\n")
+cat("[ ] Synergy loadings are interpretable: (visual inspection)\n")
+cat("[ ] Factor scores are smooth: (visual inspection)\n")
+```
+
+### Decision Checklist
+
+Use this checklist for final model selection:
+
+| Check | How to Verify | Good Status |
+|-------|---------------|-------------|
+| VAF sufficient | `compute_global_vaf_mfa()` | >= 0.85-0.90 |
+| BIC near optimal | `grid_result$summary` | Within 10 of minimum |
+| Clusters balanced | `table(model$z)` | min >= N/(2K) |
+| r not at boundary | Check `best_r` vs `rvec` | Not at edges |
+| Loadings interpretable | `plot_cluster_synergy_loadings_mfa()` | Clear structure |
+| Scores smooth | `plot_all_factor_scores_mfa()` | No high-frequency noise |
+
+### When to Reconsider
+
+**Scenario 1: r at boundary**
+```{r reconsider-boundary}
+if (best_r == max(rvec_focused)) {
+  cat("Warning: r at upper boundary. Expand rvec.\n")
+  # Re-run with expanded range
+}
+```
+
+**Scenario 2: Unbalanced clusters**
+```{r reconsider-balance}
+if (min(cluster_sizes) < 5) {
+  cat("Warning: Very small cluster. Consider:\n")
+  cat("  - Reducing K\n")
+  cat("  - Checking for outliers\n")
+  cat("  - Using more initializations\n")
+}
+```
+
+**Scenario 3: Low VAF**
+```{r reconsider-vaf}
+if (vaf < 0.80) {
+  cat("Warning: Low VAF. Consider:\n")
+  cat("  - Increasing r\n")
+  cat("  - Checking data quality\n")
+  cat("  - Reducing noise in preprocessing\n")
+}
+```
+
+## Summary
+
+This guide covered three key aspects of model selection:
+
+1. **Two-Stage Selection**: Efficient, stable approach for joint K,r optimization
+   - Use `select_optimal_K_r_mfa_twostage()`
+   - Set `r_fixed` based on global r estimate or domain knowledge
+
+2. **Post-Hoc Evaluation**: Compare candidates beyond BIC
+   - Use `posthoc_mfa_evaluation()` for comprehensive metrics
+   - Use `get_model_by_K_r()` to retrieve specific models
+
+3. **Integrated Workflow**: Four-phase decision process
+   - Phase 1: Preliminary investigation (global r)
+   - Phase 2: Joint K,r selection (grid or two-stage)
+   - Phase 3: Diagnostics and visualization
+   - Phase 4: Post-hoc comparison and final decision
+
+**Key Recommendations**:
+
+- Start with global r estimation to inform search range
+- Use focused grid search around estimated r
+- Always check cluster balance and VAF
+- Visualize synergy patterns for interpretability
+- Document your decision rationale
+
+## See Also
+
+- `vignette("r_selection_framework")`: Detailed r-selection methods
+- `vignette("metrics_reference")`: Understanding each metric
+- `vignette("tutorial")`: Basic MFA/MPCA usage
+
+## Session Info
+
+```{r session}
+sessionInfo()
+```

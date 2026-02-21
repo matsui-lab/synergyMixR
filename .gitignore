@@ -1,0 +1,13 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+src/*.o
+src/*.so
+src/*.dll
+/doc/
+/Meta/
+*.Rcheck/
+*.tar.gz
+Rplots.pdf
+.DS_Store

@@ -1,0 +1,15 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.github$
+^doc$
+^Meta$
+^\.DS_Store$
+^.*\.Rcheck$
+^cran-comments\.md$
+^revdep$
+Rplots\.pdf$
+^.*\.tar\.gz$
+^\.Rapp\.history$
+^\.git/
+^vignettes/simulation_sep$
+^vignettes/tutorial_simulate_synergy_v2\.Rmd$
